@@ -27,7 +27,7 @@ fn traverse(
     let kind = node.kind();
 
     match kind {
-        "file_version" => {
+        "file_version" | "plugin" => {
             writer.push_str(&format!("{}\n\n", get_text(source, cursor)));
         }
         "comment" => {
