@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 mod adv360;
 mod glove80;
 mod imprint_letters_only_full_bottom_row;
+mod roba;
 mod sweep;
 
 #[derive(Serialize, Deserialize, Default)]
@@ -16,6 +17,8 @@ pub enum KeyboardLayoutType {
     Glove80,
     #[serde(rename = "imprint:letters_only_full_bottom_row")]
     ImprintLettersOnlyFullBottomRow,
+    #[serde(rename = "roba")]
+    Roba,
 }
 
 pub struct KeyboardLayout {
@@ -37,5 +40,6 @@ pub fn get_layout(layout_type: &KeyboardLayoutType) -> KeyboardLayout {
         KeyboardLayoutType::ImprintLettersOnlyFullBottomRow => {
             imprint_letters_only_full_bottom_row::get_layout()
         }
+        KeyboardLayoutType::Roba => roba::get_layout(),
     }
 }
