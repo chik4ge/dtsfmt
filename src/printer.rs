@@ -83,6 +83,14 @@ fn is_define_block_start(cursor: &TreeCursor) -> bool {
             .is_none_or(|node| node.kind() != "preproc_def")
 }
 
+fn is_define_block_member(cursor: &TreeCursor) -> bool {
+    cursor.node().kind() == "preproc_def"
+        && cursor
+            .node()
+            .prev_sibling()
+            .is_some_and(|node| node.kind() == "preproc_def")
+}
+
 fn print_define_block(
     writer: &mut String,
     source: &String,
@@ -133,8 +141,6 @@ fn print_define_block(
 
         writer.push('\n');
     }
-
-    cursor.reset(last_node);
 }
 
 fn traverse(
@@ -215,6 +221,11 @@ fn traverse(
         "preproc_def" => {
             if ctx.config.align_define && is_define_block_start(cursor) {
                 print_define_block(writer, source, cursor, ctx);
+            } else if ctx.config.align_define && is_define_block_member(cursor) {
+                if lookahead(cursor).is_some_and(|n| !is_preproc(&n)) {
+                    writer.push('\n');
+                }
+                return;
             } else {
                 print_indent(writer, ctx);
                 writer.push_str("#define ");
@@ -656,6 +667,42 @@ mod tests {
                 "#define JP_KANA       LANGUAGE_1  // kana",
                 "#define JP_EMPTY",
                 "#define JP_TRAILING   VALUE",
+                "",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn define_alignment_does_not_stop_following_output() {
+        let source = [
+            "#define FIRST 1",
+            "",
+            "// comment",
+            "#define SECOND 2 // two",
+            "#define THIRD 3 // three",
+            "",
+            "&mt {",
+            "  quick-tap-ms = <0>;",
+            "};",
+            "",
+        ]
+        .join("\n");
+
+        let output = print(&source, &config(true));
+
+        assert_eq!(
+            output,
+            [
+                "#define FIRST 1",
+                "",
+                "// comment",
+                "#define SECOND 2  // two",
+                "#define THIRD  3  // three",
+                "",
+                "&mt {",
+                "  quick-tap-ms = <0>;",
+                "};",
                 "",
             ]
             .join("\n")
