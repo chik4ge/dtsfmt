@@ -34,6 +34,13 @@ be added to a `.dtsfmtrc.toml` file at the root of your project.
 
 
 ```toml
+align_define = false # Optional
+# Align consecutive non-function #define macros into columns.
+#
+# Default to false.
+```
+
+```toml
 indent_str = "  " # Optional, used for each indent level when printing.
 # Default is two spaces.
 ```

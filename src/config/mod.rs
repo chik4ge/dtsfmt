@@ -14,6 +14,10 @@ pub struct Config {
     #[serde(default)]
     pub layout: KeyboardLayoutType,
 
+    #[builder(default)]
+    #[serde(default)]
+    pub align_define: bool,
+
     #[builder(default_code = "Config::default_indent_str()")]
     #[serde(default = "Config::default_indent_str")]
     pub indent_str: String,

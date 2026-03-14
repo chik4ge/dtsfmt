@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use tree_sitter::TreeCursor;
+use tree_sitter::{Node, TreeCursor};
 
 use crate::config::Config;
 use crate::context::Context;
@@ -15,6 +15,126 @@ fn is_preproc(n: &tree_sitter::Node) -> bool {
         || n.kind() == "preproc_ifdef"
         || n.kind() == "preproc_def"
         || n.kind() == "preproc_function_def"
+}
+
+struct DefineLine {
+    name: String,
+    value: String,
+    comment: Option<String>,
+}
+
+fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
+    node.utf8_text(source.as_bytes()).unwrap_or("")
+}
+
+fn split_define_value_comment(raw: &str) -> (String, Option<String>) {
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+
+    for (index, ch) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '/' if !in_single_quote && !in_double_quote => {
+                if raw[index..].starts_with("//") {
+                    let value = raw[..index].trim().to_owned();
+                    let comment = raw[index + 2..].trim();
+                    let comment = match comment.is_empty() {
+                        true => None,
+                        false => Some(comment.to_owned()),
+                    };
+
+                    return (value, comment);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (raw.trim().to_owned(), None)
+}
+
+fn parse_define_line(source: &str, node: Node<'_>) -> DefineLine {
+    let name = node
+        .child_by_field_name("name")
+        .map(|node| node_text(source, node).trim().to_owned())
+        .unwrap_or_default();
+    let raw_value =
+        node.child_by_field_name("value").map(|node| node_text(source, node));
+    let (value, comment) = raw_value
+        .map(split_define_value_comment)
+        .unwrap_or_else(|| (String::new(), None));
+
+    DefineLine { name, value, comment }
+}
+
+fn is_define_block_start(cursor: &TreeCursor) -> bool {
+    cursor.node().kind() == "preproc_def"
+        && cursor
+            .node()
+            .prev_sibling()
+            .is_none_or(|node| node.kind() != "preproc_def")
+}
+
+fn print_define_block(
+    writer: &mut String,
+    source: &String,
+    cursor: &mut TreeCursor,
+    ctx: &Context,
+) {
+    let mut nodes = vec![cursor.node()];
+    let mut last_node = cursor.node();
+
+    while let Some(next_node) = last_node.next_sibling() {
+        if next_node.kind() != "preproc_def" {
+            break;
+        }
+
+        nodes.push(next_node);
+        last_node = next_node;
+    }
+
+    let lines = nodes
+        .into_iter()
+        .map(|node| parse_define_line(source, node))
+        .collect::<Vec<_>>();
+    let name_width =
+        lines.iter().map(|line| line.name.len()).max().unwrap_or(0);
+    let value_width =
+        lines.iter().map(|line| line.value.len()).max().unwrap_or(0);
+
+    for line in lines {
+        print_indent(writer, ctx);
+        writer.push_str("#define ");
+        writer.push_str(&line.name);
+
+        if !line.value.is_empty() || line.comment.is_some() {
+            let padding = name_width.saturating_sub(line.name.len()) + 1;
+            writer.push_str(&" ".repeat(padding));
+        }
+
+        if !line.value.is_empty() {
+            writer.push_str(&line.value);
+        }
+
+        if let Some(comment) = line.comment {
+            let padding = value_width.saturating_sub(line.value.len()) + 2;
+            writer.push_str(&" ".repeat(padding));
+            writer.push_str("// ");
+            writer.push_str(&comment);
+        }
+
+        writer.push('\n');
+    }
+
+    cursor.reset(last_node);
 }
 
 fn traverse(
@@ -93,20 +213,29 @@ fn traverse(
             }
         }
         "preproc_def" => {
-            cursor.goto_first_child();
-            writer.push_str("#define ");
+            if ctx.config.align_define && is_define_block_start(cursor) {
+                print_define_block(writer, source, cursor, ctx);
+            } else {
+                print_indent(writer, ctx);
+                writer.push_str("#define ");
 
-            // Name
-            cursor.goto_next_sibling();
-            writer.push_str(get_text(source, cursor));
-            writer.push(' ');
+                let node = cursor.node();
+                let name = node
+                    .child_by_field_name("name")
+                    .map(|node| node_text(source, node).trim())
+                    .unwrap_or("");
+                writer.push_str(name);
 
-            // Value
-            cursor.goto_next_sibling();
-            writer.push_str(get_text(source, cursor));
+                if let Some(value_node) = node.child_by_field_name("value") {
+                    let value = node_text(source, value_node).trim();
+                    if !value.is_empty() {
+                        writer.push(' ');
+                        writer.push_str(value);
+                    }
+                }
 
-            writer.push('\n');
-            cursor.goto_parent();
+                writer.push('\n');
+            }
 
             // Add a newline if this is the last preproc directive
             if lookahead(cursor).is_some_and(|n| !is_preproc(&n)) {
@@ -468,4 +597,68 @@ pub fn print(source: &String, config: &Config) -> String {
     }
 
     writer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::print;
+    use crate::config::Config;
+    use crate::layouts::KeyboardLayoutType;
+
+    fn config(align_define: bool) -> Config {
+        Config::builder()
+            .layout(KeyboardLayoutType::Adv360)
+            .align_define(align_define)
+            .build()
+    }
+
+    #[test]
+    fn define_alignment_is_disabled_by_default() {
+        let source = [
+            "#define JP_DQUOTE AT // \"",
+            "#define JP_UNDERSCORE LS(0x87) // _",
+            "",
+        ]
+        .join("\n");
+
+        let output = print(&source, &config(false));
+
+        assert_eq!(
+            output,
+            [
+                "#define JP_DQUOTE AT // \"",
+                "#define JP_UNDERSCORE LS(0x87) // _",
+                "",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn define_alignment_can_be_enabled() {
+        let source = [
+            "#define JP_DQUOTE AT // \"",
+            "#define JP_UNDERSCORE LS(0x87) // _",
+            "#define JP_KANA LANGUAGE_1 // kana",
+            "#define JP_EMPTY",
+            "#define JP_TRAILING VALUE",
+            "",
+        ]
+        .join("\n");
+
+        let output = print(&source, &config(true));
+
+        assert_eq!(
+            output,
+            [
+                "#define JP_DQUOTE     AT          // \"",
+                "#define JP_UNDERSCORE LS(0x87)    // _",
+                "#define JP_KANA       LANGUAGE_1  // kana",
+                "#define JP_EMPTY",
+                "#define JP_TRAILING   VALUE",
+                "",
+            ]
+            .join("\n")
+        );
+    }
 }
